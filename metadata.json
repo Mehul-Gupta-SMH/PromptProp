@@ -1,0 +1,5 @@
+{
+  "name": "PromptProp: AI-Driven Prompt Refiner",
+  "description": "A sophisticated prompt engineering platform that uses back-propagation techniques and AI jury ensembles to iteratively optimize prompts based on a provided dataset.",
+  "requestFramePermissions": []
+}
