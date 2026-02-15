@@ -1,43 +1,96 @@
-
 # PromptProp: AI-Driven Prompt Refinement
 
-PromptProp is a high-fidelity prompt engineering platform that applies "back-propagation" concepts to natural language instructions. It iteratively optimizes a prompt against a "Ground Truth" dataset using an ensemble of AI judges to maximize quality and alignment.
+PromptProp is a prompt engineering platform that applies "back-propagation" concepts to natural language instructions. It iteratively optimizes a prompt against a Ground Truth dataset using an ensemble of AI judges to maximize quality and alignment.
 
-## 🚀 Key Features
+## Architecture
 
-- **Primary Inference Control**: Select from various Gemini models (3 Pro, 3 Flash, Lite) for the task execution.
-- **Ensemble Jury Panel**: Add multiple judges with unique configurations (Temperature, Top P/K) to critique the AI's output.
-- **Meta-Refinement**: Uses a high-reasoning model (Gemini 3 Pro) to act as an "optimizer" that updates instructions based on failure feedback.
-- **Progress Tracking**: Real-time visualization of performance lift across iterations.
+```
+ppFrontend/          React + Vite + TypeScript
+  App.tsx            Optimization loop orchestrator
+  services/
+    apiService.ts    fetch()-based API client
+  components/
+    DatasetTable     Ground truth editor + CSV import
+    IterationChart   Recharts score progression
 
----
+ppBackend/           FastAPI + Python
+  route.py           API endpoints (/api/inference, /api/jury, /api/refine)
+  llm/
+    llm_client.py    LiteLLM wrapper — unified generate() for all providers
+    models.py        Pydantic models (ModelSettings, GenerateResponse, etc.)
+  ppsecrets/         API key management (env vars)
+  prompts/           Role definitions (manager, jury, rewriter)
+  resources/         MLflow metrics integration
+```
 
-## 🛠 Feature Roadmap
+## Current Status
 
-### 🔴 MUST ADD (Stability & Core)
-- **Local Persistence**: Save datasets and optimization histories to Browser's IndexedDB.
-- **Comparative Diff**: A text diff view showing exactly what lines changed in the prompt between Iteration X and Y.
-- **Few-Shot Engine**: Automatically extract successful test cases and inject them as `Few-Shot` examples in the optimized prompt.
-- **Token Usage Monitor**: Real-time tracking of token consumption per iteration.
+### Done
+- **LLM Interaction Layer** — Generic `generate()` function via LiteLLM supporting Gemini, OpenAI, and Anthropic through a single interface
+- **Backend API Endpoints** — `POST /api/inference`, `POST /api/jury`, `POST /api/refine` with Pydantic validation, CORS, and error handling
+- **Frontend Migration** — React app moved to `ppFrontend/` with fetch-based API client replacing direct Gemini SDK calls
+- **Multi-Provider Support** — Backend resolves model names to LiteLLM prefixes (`gemini/`, `openai/`, `anthropic/`)
+- **Role Prompt Definitions** — Manager, Jury, and Rewriter prompts authored in `.prompt` files
+- **MLflow Integration** — `registerMetrics.py` ready to log experiment metrics
 
-### 🟡 SHOULD ADD (Usability & Depth)
-- **Export to Production**: One-click download of the "Golden Prompt" in JSON, Python, or Markdown formats.
-- **Synthetic Data Generation**: Use AI to generate "Edge Case" test data based on the task description.
-- **Human-in-the-Loop**: A button to "Pause & Override" where a human can manually correct the Jury's score.
-- **Model Versioning**: Support for specific model snapshots (e.g. `gemini-1.5-pro-002`).
+### In Progress / Not Yet Wired
+- Backend endpoints are functional but the role prompts (`.prompt` files) are not yet integrated into the API logic
+- MLflow metric logging exists but nothing calls it yet
+- `generateMetrics.py` is a stub
+- `getPrompt.py` file paths don't match the actual prompt file locations
+- No database layer (SQLAlchemy planned but not started)
+- No tests
 
-### 🟢 COULD ADD (Advanced Innovation)
-- **Variable Injection**: Dynamic placeholders (e.g., `{{user_name}}`) with schema validation.
-- **Multi-Modal Back-Prop**: Support for optimizing prompts involving image or audio inputs.
-- **Benchmarking Mode**: Run multiple "Starting Prompts" in parallel to find the best seed.
-- **Prompt Linting**: Static analysis of prompts to find common pitfalls (e.g., conflicting constraints).
+## Tech Stack
 
----
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 19, TypeScript, Vite, Recharts, Tailwind CSS |
+| Backend | FastAPI, Uvicorn, Python 3.10+ |
+| LLM | LiteLLM (Gemini, OpenAI, Anthropic) |
+| Tracking | MLflow (planned) |
+| Database | SQLAlchemy (planned) |
+| Testing | pytest (planned) |
 
-## ⚙️ Quick Start
+## Quick Start
 
-1. **Environment**: Ensure your environment has a valid Gemini API Key injected.
-2. **Define Task**: Enter your goal (e.g., "Helpdesk agent categorization").
-3. **Dataset**: Load your examples into the Ground Truth table.
-4. **Ensemble**: Add a few judges (one with low temp for consistency, one with high for diversity).
-5. **Optimize**: Click **"Initiate Cycle"** and watch the performance lift.
+### Prerequisites
+- Python 3.10+
+- Node.js 18+
+- API key for at least one provider (set as `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `ANTHROPIC_API_KEY` env var)
+
+### Backend
+```bash
+cd ppBackend
+pip install -r ../requirements.txt
+python main.py
+# Runs on http://localhost:8000
+# API docs at http://localhost:8000/docs
+```
+
+### Frontend
+```bash
+cd ppFrontend
+npm install
+npm run dev
+# Runs on http://localhost:3000, proxies /api to backend
+```
+
+### Usage
+1. Open `http://localhost:3000`
+2. Enter a task description (e.g., "Categorize customer feedback into Product, Billing, Shipping, or General")
+3. Add test cases to the Ground Truth table (or import CSV)
+4. Configure the jury panel (model + temperature)
+5. Click **Propagate Lift** — the system iterates up to 5 cycles, refining the prompt each time
+
+## How It Works
+
+```
+Cycle 1..N (max 5):
+  1. INFERENCE  — Run current prompt on every test case via selected model
+  2. JURY       — Each jury member scores the output (0-100) against expected answer
+  3. CONVERGE?  — Stop if avg score >= 98% or score delta < 0.2
+  4. REFINE     — Collect failures (score < 90), feed to meta-optimizer
+                  which rewrites the prompt targeting specific weaknesses
+  5. Loop with new prompt
+```
