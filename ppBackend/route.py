@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from llm import generate, ModelSettings as LLMSettings, LLMError
+from prompts.getPrompt import get_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -129,19 +130,23 @@ async def api_inference(req: InferenceRequest):
 @app.post("/api/jury", response_model=JuryResponse)
 async def api_jury(req: JuryRequest):
     """Evaluate model output using a jury member."""
-    jury_prompt = (
+    system_prompt = get_prompt("jury")
+
+    user_prompt = (
         f"TASK CONTEXT: {req.taskDescription}\n"
         f"USER QUERY: {req.row.query}\n"
         f"EXPECTED OUTPUT: {req.row.expectedOutput}\n"
         f"SOFT NEGATIVES: {req.row.softNegatives or 'None'}\n"
         f"HARD NEGATIVES: {req.row.hardNegatives or 'None'}\n\n"
         f'AI OUTPUT TO EVALUATE:\n"""\n{req.actualOutput}\n"""\n\n'
-        "Evaluate the AI output objectively based on the criteria. "
         'Return a JSON object with exactly two keys: '
         '"score" (number from 0 to 100) and "reasoning" (string with detailed critique). '
         "Be strict. If it hits a hard negative, score below 40."
     )
-    messages = [{"role": "user", "content": jury_prompt}]
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
 
     settings = None
     if req.jurySettings:
@@ -176,20 +181,19 @@ REFINE_MODEL = "gemini/gemini-3-pro-preview"
 @app.post("/api/refine", response_model=RefineResponse)
 async def api_refine(req: RefineRequest):
     """Refine a prompt based on failure feedback."""
-    refiner_prompt = (
-        "You are a Prompt Meta-Optimizer.\n"
+    system_prompt = get_prompt("rewriter")
+
+    user_prompt = (
         f"TASK: {req.taskDescription}\n\n"
         f'CURRENT PROMPT:\n"""\n{req.currentPrompt}\n"""\n\n'
         f"CRITIQUE FROM FAILED TEST CASES (BACK-PROPAGATED ERROR):\n{req.failures}\n\n"
-        "INSTRUCTIONS:\n"
-        "1. Identify exactly where the current prompt fails to guide the model.\n"
-        "2. Rewrite the prompt to fix these specific issues.\n"
-        "3. Keep existing successes intact.\n"
-        '4. Provide a "deltaReasoning" explaining why this change specifically targets the observed failures.\n\n'
         "Return a JSON object with exactly three keys: "
         '"explanation" (string), "refinedPrompt" (string), "deltaReasoning" (string).'
     )
-    messages = [{"role": "user", "content": refiner_prompt}]
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
     settings = LLMSettings(temperature=0.2)
 
     try:
