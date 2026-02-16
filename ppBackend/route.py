@@ -8,8 +8,12 @@ from starlette.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 
+from sqlalchemy.orm import Session
+from fastapi import Depends
+
 from llm import generate, ModelSettings as LLMSettings, LLMError
 from prompts.getPrompt import get_prompt
+from db import get_db, Experiment
 
 logger = logging.getLogger(__name__)
 
@@ -224,25 +228,25 @@ async def api_refine(req: RefineRequest):
 # ---------------------------------------------------------------------------
 
 @app.get("/jury")
-async def jury(agent_config: dict, generated_answer: dict, reference_answer: dict, experiment_id: str):
+def jury(experiment_id: str, db: Session = Depends(get_db)):
     raise HTTPException(status_code=501, detail="Jury processing not implemented yet.")
 
 @app.get("/evaluate")
-async def evaluate(agent_config: dict, jury_eval: dict, experiment_id: str):
+def evaluate(experiment_id: str, db: Session = Depends(get_db)):
     raise HTTPException(status_code=501, detail="Evaluation processing not implemented yet.")
 
 @app.get("/evaluation_metrics")
-async def evaluation_metrics(experiment_id: str):
+def evaluation_metrics(experiment_id: str, db: Session = Depends(get_db)):
     raise HTTPException(status_code=501, detail="Evaluation metrics processing not implemented yet.")
 
 @app.post("/train_data")
-async def train_data(experiment_id: str, data: dict):
+def train_data(experiment_id: str, data: dict, db: Session = Depends(get_db)):
     raise HTTPException(status_code=501, detail="Training data processing not implemented yet.")
 
 @app.post("/validation_data")
-async def validation_data(experiment_id: str, data: dict):
+def validation_data(experiment_id: str, data: dict, db: Session = Depends(get_db)):
     raise HTTPException(status_code=501, detail="Validation data processing not implemented yet.")
 
 @app.post("/test_data")
-async def test_data(experiment_id: str, data: dict):
+def test_data(experiment_id: str, data: dict, db: Session = Depends(get_db)):
     raise HTTPException(status_code=501, detail="Test data processing not implemented yet.")

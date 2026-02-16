@@ -27,3 +27,4 @@ dist-ssr
 __pycache__
 ppBackend/configs
 ppBackend/ppsecrets
+*.db

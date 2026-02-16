@@ -8,6 +8,8 @@ which handles prompt refinement, jury evaluation, and experiment management.
 import uvicorn
 import logging
 from configs.getConfig import getConfig
+from db import Base, engine
+from db.session import database_url
 
 # Configure logging
 logging.basicConfig(
@@ -34,6 +36,11 @@ def main():
         port = config.get('server', {}).get('port', 8000)
         reload = config.get('server', {}).get('reload', False)
         workers = config.get('server', {}).get('workers', 1)
+
+        # Create tables for dev (SQLite). Prod uses Alembic migrations.
+        if database_url.startswith("sqlite"):
+            logger.info("Dev mode: creating SQLite tables via create_all()")
+            Base.metadata.create_all(bind=engine)
 
         logger.info(f"Starting PromptProp Backend API")
         logger.info(f"Server Configuration:")
