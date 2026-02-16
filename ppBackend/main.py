@@ -10,6 +10,7 @@ import logging
 from configs.getConfig import getConfig
 from db import Base, engine
 from db.session import database_url
+from resources.registerMetrics import configure as mlflow_configure
 
 # Configure logging
 logging.basicConfig(
@@ -41,6 +42,12 @@ def main():
         if database_url.startswith("sqlite"):
             logger.info("Dev mode: creating SQLite tables via create_all()")
             Base.metadata.create_all(bind=engine)
+
+        # Configure MLflow tracking
+        mlflow_uri = config.get('mlflow', {}).get('tracking_uri')
+        if config.get('mlflow', {}).get('enabled', False):
+            mlflow_configure(mlflow_uri)
+            logger.info(f"MLflow tracking enabled")
 
         logger.info(f"Starting PromptProp Backend API")
         logger.info(f"Server Configuration:")

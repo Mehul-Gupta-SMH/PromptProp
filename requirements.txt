@@ -8,3 +8,4 @@ litellm>=1.55.0
 sqlalchemy==2.0.36
 alembic==1.13.3
 psycopg2-binary==2.9.9
+mlflow==2.19.0

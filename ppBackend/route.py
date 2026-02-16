@@ -15,6 +15,8 @@ from fastapi import Depends
 from llm import generate, ModelSettings as LLMSettings, LLMError
 from prompts.getPrompt import get_prompt
 from db import get_db, Experiment, DatasetRow
+from resources.generateMetrics import compute_metrics
+from resources.registerMetrics import register as mlflow_register, configure as mlflow_configure
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +91,24 @@ class RefineResponse(BaseModel):
     explanation: str
     refinedPrompt: str
     deltaReasoning: str
+
+
+# --- Metrics endpoint ---
+
+class TestCaseResultPayload(BaseModel):
+    score: float
+    reasoning: str = ""
+
+class MetricsRequest(BaseModel):
+    experimentId: str
+    iteration: int
+    results: list[TestCaseResultPayload]
+    promptText: Optional[str] = None
+    tokenUsage: Optional[dict] = None
+
+class MetricsResponse(BaseModel):
+    metrics: dict[str, float]
+    mlflowRunId: Optional[str] = None
 
 
 # --- Dataset endpoints ---
@@ -251,6 +271,32 @@ async def api_refine(req: RefineRequest):
         )
     except LLMError as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Metrics endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/api/metrics", response_model=MetricsResponse)
+def log_iteration_metrics(req: MetricsRequest):
+    """Compute and log metrics for a completed jury evaluation round.
+
+    Computes traditional + non-traditional metrics from jury results,
+    then logs them to MLflow along with the prompt version and token usage.
+    """
+    results_dicts = [{"score": r.score, "reasoning": r.reasoning} for r in req.results]
+    metrics = compute_metrics(results_dicts)
+
+    run_id = mlflow_register(
+        experiment_name=req.experimentId,
+        metrics_dict=metrics,
+        iteration=req.iteration,
+        prompt_text=req.promptText,
+        token_usage=req.tokenUsage,
+        run_name=f"iteration-{req.iteration}",
+    )
+
+    return MetricsResponse(metrics=metrics, mlflowRunId=run_id)
 
 
 # ---------------------------------------------------------------------------
