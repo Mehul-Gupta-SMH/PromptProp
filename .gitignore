@@ -30,4 +30,5 @@ ppBackend/ppsecrets
 .env
 *.db
 ppBackend/mlruns/
+.coverage
 .claude/
