@@ -69,6 +69,88 @@ export interface OptimizeSSEEvent {
   data: any;
 }
 
+// ---------------------------------------------------------------------------
+// Experiment History types
+// ---------------------------------------------------------------------------
+
+export interface ExperimentSummary {
+  id: string;
+  name: string | null;
+  taskDescription: string;
+  basePrompt: string;
+  runnerModel: Record<string, unknown>;
+  isComplete: boolean;
+  createdAt: string;
+  updatedAt: string;
+  iterationCount: number;
+  bestScore: number | null;
+  finalScore: number | null;
+  datasetSize: number;
+}
+
+export interface ExperimentListResponse {
+  experiments: ExperimentSummary[];
+  total: number;
+}
+
+export interface JuryEvaluationDetail {
+  id: string;
+  juryMemberId: string;
+  juryName: string;
+  score: number;
+  reasoning: string;
+}
+
+export interface IterationResultDetail {
+  id: string;
+  datasetRowId: string;
+  actualOutput: string;
+  averageScore: number | null;
+  combinedFeedback: string | null;
+  juryEvaluations: JuryEvaluationDetail[];
+}
+
+export interface PromptVersionDetail {
+  id: string;
+  iterationNumber: number;
+  promptText: string;
+  averageScore: number | null;
+  refinementFeedback: string | null;
+  refinementMeta: Record<string, unknown> | null;
+  results: IterationResultDetail[];
+}
+
+export interface JuryMemberDetail {
+  id: string;
+  name: string;
+  provider: string;
+  model: string;
+  settings: Record<string, unknown>;
+}
+
+export interface DatasetRowDetail {
+  id: string;
+  split: string;
+  query: string;
+  expectedOutput: string;
+  softNegatives: string | null;
+  hardNegatives: string | null;
+}
+
+export interface ExperimentDetail {
+  id: string;
+  name: string | null;
+  taskDescription: string;
+  basePrompt: string;
+  runnerModel: Record<string, unknown>;
+  isComplete: boolean;
+  createdAt: string;
+  updatedAt: string;
+  juryMembers: JuryMemberDetail[];
+  datasetRows: DatasetRowDetail[];
+  promptVersions: PromptVersionDetail[];
+}
+
 export interface AppState {
   taskDescription: string;
   basePrompt: string;

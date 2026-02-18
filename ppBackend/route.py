@@ -9,14 +9,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
+from datetime import datetime
 
 import httpx
-from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload
 from fastapi import Depends
 
 from llm import generate, ModelSettings as LLMSettings, LLMError
 from prompts.getPrompt import get_prompt
-from db import get_db, Experiment, DatasetRow
+from db import get_db, Experiment, DatasetRow, PromptVersion, IterationResult, JuryEvaluation, JuryMember
 from resources.generateMetrics import compute_metrics
 from resources.registerMetrics import register as mlflow_register, configure as mlflow_configure
 from optimize import OptimizeRequest, optimize_endpoint
@@ -570,6 +572,230 @@ async def api_models(refresh: bool = False):
 async def api_optimize(req: OptimizeRequest):
     """Start an optimization loop and stream progress via SSE."""
     return optimize_endpoint(req)
+
+
+# ---------------------------------------------------------------------------
+# Experiment history endpoints
+# ---------------------------------------------------------------------------
+
+class ExperimentSummary(BaseModel):
+    id: str
+    name: Optional[str] = None
+    taskDescription: str
+    basePrompt: str
+    runnerModel: dict
+    isComplete: bool
+    createdAt: datetime
+    updatedAt: datetime
+    iterationCount: int
+    bestScore: Optional[float] = None
+    finalScore: Optional[float] = None
+    datasetSize: int
+
+class ExperimentListResponse(BaseModel):
+    experiments: list[ExperimentSummary]
+    total: int
+
+class JuryEvaluationDetail(BaseModel):
+    id: str
+    juryMemberId: str
+    juryName: str
+    score: float
+    reasoning: str
+
+class IterationResultDetail(BaseModel):
+    id: str
+    datasetRowId: str
+    actualOutput: str
+    averageScore: Optional[float] = None
+    combinedFeedback: Optional[str] = None
+    juryEvaluations: list[JuryEvaluationDetail]
+
+class PromptVersionDetail(BaseModel):
+    id: str
+    iterationNumber: int
+    promptText: str
+    averageScore: Optional[float] = None
+    refinementFeedback: Optional[str] = None
+    refinementMeta: Optional[dict] = None
+    results: list[IterationResultDetail]
+
+class JuryMemberDetail(BaseModel):
+    id: str
+    name: str
+    provider: str
+    model: str
+    settings: dict
+
+class DatasetRowDetail(BaseModel):
+    id: str
+    split: str
+    query: str
+    expectedOutput: str
+    softNegatives: Optional[str] = None
+    hardNegatives: Optional[str] = None
+
+class ExperimentDetailResponse(BaseModel):
+    id: str
+    name: Optional[str] = None
+    taskDescription: str
+    basePrompt: str
+    runnerModel: dict
+    isComplete: bool
+    createdAt: datetime
+    updatedAt: datetime
+    juryMembers: list[JuryMemberDetail]
+    datasetRows: list[DatasetRowDetail]
+    promptVersions: list[PromptVersionDetail]
+
+
+@app.get("/api/experiments", response_model=ExperimentListResponse)
+def list_experiments(limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
+    """List experiments with summary statistics."""
+    total = db.query(func.count(Experiment.id)).scalar()
+
+    experiments = (
+        db.query(Experiment)
+        .order_by(Experiment.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    summaries = []
+    for exp in experiments:
+        # Count iterations
+        iteration_count = (
+            db.query(func.count(PromptVersion.id))
+            .filter(PromptVersion.experiment_id == exp.id)
+            .scalar()
+        )
+        # Best score
+        best_score = (
+            db.query(func.max(PromptVersion.average_score))
+            .filter(PromptVersion.experiment_id == exp.id)
+            .scalar()
+        )
+        # Final score (last iteration by iteration_number)
+        last_pv = (
+            db.query(PromptVersion)
+            .filter(PromptVersion.experiment_id == exp.id)
+            .order_by(PromptVersion.iteration_number.desc())
+            .first()
+        )
+        final_score = last_pv.average_score if last_pv else None
+        # Dataset size
+        dataset_size = (
+            db.query(func.count(DatasetRow.id))
+            .filter(DatasetRow.experiment_id == exp.id)
+            .scalar()
+        )
+
+        summaries.append(ExperimentSummary(
+            id=exp.id,
+            name=exp.name,
+            taskDescription=exp.task_description,
+            basePrompt=exp.base_prompt,
+            runnerModel=exp.runner_model,
+            isComplete=exp.is_complete,
+            createdAt=exp.created_at,
+            updatedAt=exp.updated_at,
+            iterationCount=iteration_count,
+            bestScore=best_score,
+            finalScore=final_score,
+            datasetSize=dataset_size,
+        ))
+
+    return ExperimentListResponse(experiments=summaries, total=total)
+
+
+@app.get("/api/experiments/{experiment_id}", response_model=ExperimentDetailResponse)
+def get_experiment_detail(experiment_id: str, db: Session = Depends(get_db)):
+    """Return full experiment detail with all nested data."""
+    experiment = (
+        db.query(Experiment)
+        .options(
+            joinedload(Experiment.prompt_versions)
+                .joinedload(PromptVersion.iteration_results)
+                .joinedload(IterationResult.jury_evaluations),
+            joinedload(Experiment.dataset_rows),
+            joinedload(Experiment.jury_members),
+        )
+        .filter(Experiment.id == experiment_id)
+        .first()
+    )
+
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found.")
+
+    jury_members = [
+        JuryMemberDetail(
+            id=jm.id,
+            name=jm.name,
+            provider=jm.provider,
+            model=jm.model,
+            settings=jm.settings,
+        )
+        for jm in experiment.jury_members
+    ]
+
+    dataset_rows = [
+        DatasetRowDetail(
+            id=dr.id,
+            split=dr.split,
+            query=dr.query,
+            expectedOutput=dr.expected_output,
+            softNegatives=dr.soft_negatives,
+            hardNegatives=dr.hard_negatives,
+        )
+        for dr in experiment.dataset_rows
+    ]
+
+    prompt_versions = []
+    for pv in experiment.prompt_versions:
+        results = []
+        for ir in pv.iteration_results:
+            evals = [
+                JuryEvaluationDetail(
+                    id=je.id,
+                    juryMemberId=je.jury_member_id,
+                    juryName=je.jury_name,
+                    score=je.score,
+                    reasoning=je.reasoning,
+                )
+                for je in ir.jury_evaluations
+            ]
+            results.append(IterationResultDetail(
+                id=ir.id,
+                datasetRowId=ir.dataset_row_id,
+                actualOutput=ir.actual_output,
+                averageScore=ir.average_score,
+                combinedFeedback=ir.combined_feedback,
+                juryEvaluations=evals,
+            ))
+        prompt_versions.append(PromptVersionDetail(
+            id=pv.id,
+            iterationNumber=pv.iteration_number,
+            promptText=pv.prompt_text,
+            averageScore=pv.average_score,
+            refinementFeedback=pv.refinement_feedback,
+            refinementMeta=pv.refinement_meta,
+            results=results,
+        ))
+
+    return ExperimentDetailResponse(
+        id=experiment.id,
+        name=experiment.name,
+        taskDescription=experiment.task_description,
+        basePrompt=experiment.base_prompt,
+        runnerModel=experiment.runner_model,
+        isComplete=experiment.is_complete,
+        createdAt=experiment.created_at,
+        updatedAt=experiment.updated_at,
+        juryMembers=jury_members,
+        datasetRows=dataset_rows,
+        promptVersions=prompt_versions,
+    )
 
 
 # ---------------------------------------------------------------------------

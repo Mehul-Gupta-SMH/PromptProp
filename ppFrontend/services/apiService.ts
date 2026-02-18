@@ -1,6 +1,17 @@
-import { DatasetRow, ModelSettings, JuryMember, OptimizeSSEEvent } from '../types';
+import { DatasetRow, ModelSettings, JuryMember, OptimizeSSEEvent, ExperimentListResponse, ExperimentDetail } from '../types';
 
 const API_BASE = '/api';
+
+async function get<T>(endpoint: string): Promise<T> {
+  const response = await fetch(`${API_BASE}${endpoint}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail || `API error: ${response.status}`);
+  }
+
+  return response.json();
+}
 
 async function post<T>(endpoint: string, body: Record<string, unknown>): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
@@ -68,6 +79,24 @@ export const refinePrompt = async (
     currentPrompt,
     failures,
   });
+};
+
+
+// ---------------------------------------------------------------------------
+// Experiment history
+// ---------------------------------------------------------------------------
+
+export const listExperiments = async (
+  limit = 50,
+  offset = 0
+): Promise<ExperimentListResponse> => {
+  return get<ExperimentListResponse>(`/experiments?limit=${limit}&offset=${offset}`);
+};
+
+export const getExperimentDetail = async (
+  id: string
+): Promise<ExperimentDetail> => {
+  return get<ExperimentDetail>(`/experiments/${id}`);
 };
 
 
