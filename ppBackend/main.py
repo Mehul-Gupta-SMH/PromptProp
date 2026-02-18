@@ -7,6 +7,9 @@ which handles prompt refinement, jury evaluation, and experiment management.
 
 import uvicorn
 import logging
+from dotenv import load_dotenv
+load_dotenv()  # Load .env before anything reads env vars
+
 from configs.getConfig import getConfig
 from db import Base, engine
 from db.session import database_url
