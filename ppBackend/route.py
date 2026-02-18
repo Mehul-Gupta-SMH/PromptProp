@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import random
 
 import fastapi
@@ -9,6 +10,7 @@ from starlette.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
 
+import httpx
 from sqlalchemy.orm import Session
 from fastapi import Depends
 
@@ -152,8 +154,147 @@ async def root():
 
 
 @app.get("/health-check")
-async def health_check():
-    return JSONResponse({"status": "healthy"})
+async def health_check(deep: bool = False):
+    """Health check endpoint.
+
+    Query params:
+        deep (bool): When true, validates each configured API key by hitting
+                     a lightweight provider endpoint (model list / message ping).
+    """
+    result: dict = {"status": "healthy"}
+
+    if not deep:
+        return JSONResponse(result)
+
+    # Deep check: test each configured API key
+    providers = await _check_api_keys()
+    result["providers"] = providers
+
+    # Overall status degrades if any configured key fails (warnings don't degrade)
+    any_error = any(p["status"] == "error" for p in providers.values() if p["configured"])
+    any_warning = any(p["status"] == "warning" for p in providers.values() if p["configured"])
+    if any_error:
+        result["status"] = "degraded"
+    elif any_warning:
+        result["status"] = "healthy (with warnings)"
+
+    return JSONResponse(result)
+
+
+async def _check_api_keys() -> dict:
+    """Validate API keys by calling lightweight provider endpoints."""
+    checks: dict = {}
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        # --- OpenAI ---
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        checks["openai"] = await _check_openai(client, openai_key)
+
+        # --- Gemini ---
+        gemini_key = os.environ.get("GEMINI_API_KEY")
+        checks["gemini"] = await _check_gemini(client, gemini_key)
+
+        # --- Anthropic ---
+        anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+        checks["anthropic"] = await _check_anthropic(client, anthropic_key)
+
+    return checks
+
+
+async def _check_openai(client: httpx.AsyncClient, key: str | None) -> dict:
+    if not key:
+        return {"configured": False, "status": "missing", "message": "OPENAI_API_KEY not set"}
+    try:
+        r = await client.get(
+            "https://api.openai.com/v1/models",
+            headers={"Authorization": f"Bearer {key}"},
+            params={"limit": 1},
+        )
+        if r.status_code == 200:
+            # Try to get billing/usage info (organization-level, may not be available)
+            billing = await _openai_billing(client, key)
+            return {"configured": True, "status": "ok", "message": "Key is valid", **billing}
+        elif r.status_code == 401:
+            return {"configured": True, "status": "error", "message": "Invalid API key"}
+        elif r.status_code == 429:
+            return {"configured": True, "status": "error", "message": "Rate limited — key works but quota may be exhausted"}
+        else:
+            return {"configured": True, "status": "error", "message": f"HTTP {r.status_code}: {r.text[:200]}"}
+    except Exception as e:
+        return {"configured": True, "status": "error", "message": str(e)}
+
+
+async def _openai_billing(client: httpx.AsyncClient, key: str) -> dict:
+    """Attempt to fetch OpenAI billing/usage. Returns empty dict on failure (not all keys have access)."""
+    try:
+        r = await client.get(
+            "https://api.openai.com/v1/organization/usage",
+            headers={"Authorization": f"Bearer {key}"},
+            params={"bucket_width": "1d", "limit": 1},
+        )
+        if r.status_code == 200:
+            data = r.json()
+            # Extract useful billing info if available
+            info: dict = {}
+            if "total_usage" in data:
+                info["usage_cents"] = data["total_usage"]
+            return {"billing": info} if info else {}
+        return {}
+    except Exception:
+        return {}
+
+
+async def _check_gemini(client: httpx.AsyncClient, key: str | None) -> dict:
+    if not key:
+        return {"configured": False, "status": "missing", "message": "GEMINI_API_KEY not set"}
+    try:
+        r = await client.get(
+            "https://generativelanguage.googleapis.com/v1/models",
+            params={"key": key, "pageSize": 1},
+        )
+        if r.status_code == 200:
+            return {"configured": True, "status": "ok", "message": "Key is valid"}
+        elif r.status_code == 400 or r.status_code == 403:
+            return {"configured": True, "status": "error", "message": "Invalid or restricted API key"}
+        else:
+            return {"configured": True, "status": "error", "message": f"HTTP {r.status_code}: {r.text[:200]}"}
+    except Exception as e:
+        return {"configured": True, "status": "error", "message": str(e)}
+
+
+async def _check_anthropic(client: httpx.AsyncClient, key: str | None) -> dict:
+    if not key:
+        return {"configured": False, "status": "missing", "message": "ANTHROPIC_API_KEY not set"}
+    try:
+        # Count tokens is the cheapest Anthropic API call — no model invocation
+        r = await client.post(
+            "https://api.anthropic.com/v1/messages/count_tokens",
+            headers={
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        if r.status_code == 200:
+            return {"configured": True, "status": "ok", "message": "Key is valid"}
+        elif r.status_code == 401:
+            return {"configured": True, "status": "error", "message": "Invalid API key"}
+        elif r.status_code == 429:
+            return {"configured": True, "status": "error", "message": "Rate limited — key works but quota may be exhausted"}
+        elif r.status_code == 400:
+            body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            err_msg = body.get("error", {}).get("message", r.text[:200])
+            if "credit balance" in err_msg.lower():
+                return {"configured": True, "status": "warning", "message": f"Key is valid but no credits: {err_msg}"}
+            return {"configured": True, "status": "error", "message": err_msg}
+        else:
+            return {"configured": True, "status": "error", "message": f"HTTP {r.status_code}: {r.text[:200]}"}
+    except Exception as e:
+        return {"configured": True, "status": "error", "message": str(e)}
 
 
 @app.post("/api/inference", response_model=InferenceResponse)
