@@ -17,6 +17,8 @@ from prompts.getPrompt import get_prompt
 from db import get_db, Experiment, DatasetRow
 from resources.generateMetrics import compute_metrics
 from resources.registerMetrics import register as mlflow_register, configure as mlflow_configure
+from optimize import OptimizeRequest, optimize_endpoint
+from models_list import get_available_models
 
 logger = logging.getLogger(__name__)
 
@@ -407,6 +409,26 @@ def _count_splits(db: Session, experiment_id: str) -> SplitStats:
         test=counts["test"],
         total=sum(counts.values()),
     )
+
+
+# ---------------------------------------------------------------------------
+# Models endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/models")
+async def api_models(refresh: bool = False):
+    """Return available LLM models grouped by provider."""
+    return await get_available_models(force_refresh=refresh)
+
+
+# ---------------------------------------------------------------------------
+# Optimization endpoint (SSE streaming)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/optimize")
+async def api_optimize(req: OptimizeRequest):
+    """Start an optimization loop and stream progress via SSE."""
+    return optimize_endpoint(req)
 
 
 # ---------------------------------------------------------------------------
