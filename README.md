@@ -14,43 +14,56 @@ ppFrontend/          React + Vite + TypeScript
     IterationChart   Recharts score progression
 
 ppBackend/           FastAPI + Python
-  route.py           API endpoints (/api/inference, /api/jury, /api/refine)
+  route.py           API endpoints (inference, jury, refine, metrics, dataset, models)
+  optimize.py        Server-side optimization loop with SSE streaming
+  models_list.py     Dynamic model discovery across providers
   llm/
     llm_client.py    LiteLLM wrapper — unified generate() for all providers
     models.py        Pydantic models (ModelSettings, GenerateResponse, etc.)
+  db/
+    models.py        SQLAlchemy ORM (Experiment, DatasetRow, PromptVersion, etc.)
+    session.py       Engine + session management (SQLite dev / Postgres prod)
   ppsecrets/         API key management (env vars)
   prompts/           Role definitions (manager, jury, rewriter)
-  resources/         MLflow metrics integration
+  resources/
+    generateMetrics.py   Traditional + non-traditional metric computation
+    registerMetrics.py   MLflow experiment tracking integration
+  tests/             pytest suite (unit, integration, regression)
 ```
 
 ## Current Status
 
 ### Done
-- **LLM Interaction Layer** — Generic `generate()` function via LiteLLM supporting Gemini, OpenAI, and Anthropic through a single interface
-- **Backend API Endpoints** — `POST /api/inference`, `POST /api/jury`, `POST /api/refine` with Pydantic validation, CORS, and error handling
-- **Frontend Migration** — React app moved to `ppFrontend/` with fetch-based API client replacing direct Gemini SDK calls
-- **Multi-Provider Support** — Backend resolves model names to LiteLLM prefixes (`gemini/`, `openai/`, `anthropic/`)
-- **Role Prompt Definitions** — Manager, Jury, and Rewriter prompts authored in `.prompt` files
-- **MLflow Integration** — `registerMetrics.py` ready to log experiment metrics
+- **LLM Interaction Layer** — Generic `generate()` function via LiteLLM supporting Gemini, OpenAI, and Anthropic
+- **Backend API Endpoints** — 11 endpoints: inference, jury, refine, metrics, dataset CRUD, model discovery, optimization loop
+- **Server-Side Optimization Loop** — Full inference → jury → refine cycle with SSE streaming (`optimize.py`)
+- **Multi-Provider Model Discovery** — Dynamic model fetching from Gemini, OpenAI, and Anthropic APIs (`models_list.py`)
+- **SQLAlchemy Database Layer** — 6 ORM models (Experiment, DatasetRow, JuryMember, PromptVersion, IterationResult, JuryEvaluation) with cascade relationships
+- **Role Prompt Integration** — Manager, Jury, and Rewriter prompts loaded from `.prompt` files and used in endpoints
+- **Metric Computation Pipeline** — Traditional (accuracy, precision, recall) and non-traditional (directness, format adherence, consistency, relevance) metrics
+- **MLflow Tracking** — Per-iteration metrics logging with prompt versions as artifacts
+- **Dataset Management** — Upload, auto-split (train/val/test), and retrieval endpoints
+- **Frontend Migration** — React app with fetch-based API client, multi-provider model selector, token usage monitor
+- **Test Suite** — 146 pytest tests (unit + integration + regression) with 91% coverage
 
-### In Progress / Not Yet Wired
-- Backend endpoints are functional but the role prompts (`.prompt` files) are not yet integrated into the API logic
-- MLflow metric logging exists but nothing calls it yet
-- `generateMetrics.py` is a stub
-- `getPrompt.py` file paths don't match the actual prompt file locations
-- No database layer (SQLAlchemy planned but not started)
-- No tests
+### In Progress
+- IndexedDB for client-side persistence
+- Prompt diff view between iterations
+- Few-shot example injection
+- Synthetic data generation
+- Human-in-the-loop annotation
+- Advanced convergence strategies
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 19, TypeScript, Vite, Recharts, Tailwind CSS |
-| Backend | FastAPI, Uvicorn, Python 3.10+ |
-| LLM | LiteLLM (Gemini, OpenAI, Anthropic) |
-| Tracking | MLflow (planned) |
-| Database | SQLAlchemy (planned) |
-| Testing | pytest (planned) |
+| Layer | Technology | Status |
+|-------|-----------|--------|
+| Frontend | React 19, TypeScript, Vite, Recharts, Tailwind CSS | Active |
+| Backend | FastAPI, Uvicorn, Python 3.10+ | Active |
+| LLM | LiteLLM (Gemini, OpenAI, Anthropic) | Active |
+| Database | SQLAlchemy + SQLite (dev) / PostgreSQL (prod) | Active |
+| Tracking | MLflow | Active |
+| Testing | pytest, pytest-asyncio, pytest-cov | Active |
 
 ## Quick Start
 
@@ -74,6 +87,15 @@ cd ppFrontend
 npm install
 npm run dev
 # Runs on http://localhost:3000, proxies /api to backend
+```
+
+### Tests
+```bash
+cd ppBackend
+pip install -r requirements-test.txt
+pytest tests/ -v
+# With coverage:
+pytest tests/ --cov=. --cov-report=term-missing
 ```
 
 ### Usage
