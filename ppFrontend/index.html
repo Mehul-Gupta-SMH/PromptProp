@@ -17,6 +17,9 @@
         ::-webkit-scrollbar-track { background: #1f2937; }
         ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+        /* Dark theme for native select/optgroup */
+        select, select option, select optgroup { background-color: #0a0c12; color: #e5e7eb; }
+        select optgroup { font-weight: 700; color: #6366f1; font-size: 11px; letter-spacing: 0.05em; }
     </style>
 <script type="importmap">
 {
@@ -31,5 +34,6 @@
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen overflow-x-hidden">
     <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
 </body>
 </html>

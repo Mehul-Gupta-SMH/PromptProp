@@ -56,6 +56,19 @@ export interface OptimizationStatus {
   currentMessage: string;
 }
 
+export interface TokenUsageBreakdown {
+  inference: number;
+  jury: number;
+  refinement: number;
+  total: number;
+}
+
+export interface OptimizeSSEEvent {
+  event: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data: any;
+}
+
 export interface AppState {
   taskDescription: string;
   basePrompt: string;
@@ -70,5 +83,10 @@ export interface AppState {
   refinementHistory: IterationStep[];
   isOptimizing: boolean;
   currentIteration: number;
+  managerModel: {
+    model: string;
+    settings: ModelSettings;
+  };
   optimizationStatus: OptimizationStatus;
+  tokenUsage: TokenUsageBreakdown;
 }

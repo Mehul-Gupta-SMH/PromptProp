@@ -1,20 +1,157 @@
 
-import React, { useState, useMemo } from 'react';
-import { 
-  DatasetRow, IterationStep, LLMProvider, 
-  AppState, TestCaseResult, ProviderKeys, JuryMember, ModelSettings 
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  DatasetRow, IterationStep, LLMProvider,
+  AppState, TestCaseResult, ProviderKeys, JuryMember, ModelSettings,
+  OptimizeSSEEvent, TokenUsageBreakdown
 } from './types';
-import * as gemini from './services/apiService';
+import { startOptimizeStream } from './services/apiService';
 import DatasetTable from './components/DatasetTable';
 import IterationChart from './components/IterationChart';
 
 const INITIAL_PROMPT = "You are a professional assistant. Help the user with their request.";
 
-const GEMINI_MODELS = [
-  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash' },
-  { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro' },
-  { id: 'gemini-2.5-flash-lite-latest', name: 'Gemini Flash Lite' },
+type ModelGroup = { provider: string; label: string; models: { id: string; name: string }[] };
+
+const FALLBACK_MODELS: ModelGroup[] = [
+  {
+    provider: 'gemini',
+    label: 'Google Gemini',
+    models: [
+      { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro' },
+      { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash' },
+      { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
+    ],
+  },
+  {
+    provider: 'openai',
+    label: 'OpenAI',
+    models: [
+      { id: 'gpt-4o', name: 'GPT-4o' },
+      { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
+      { id: 'o3-mini', name: 'o3 Mini' },
+    ],
+  },
+  {
+    provider: 'anthropic',
+    label: 'Anthropic',
+    models: [
+      { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5' },
+      { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
+    ],
+  },
 ];
+
+/** Helper to find which provider a model ID belongs to */
+const getProviderForModel = (modelId: string, groups: ModelGroup[]): LLMProvider => {
+  for (const group of groups) {
+    if (group.models.some(m => m.id === modelId)) return group.provider as LLMProvider;
+  }
+  if (modelId.startsWith('gpt') || modelId.startsWith('o1') || modelId.startsWith('o3')) return LLMProvider.OPENAI;
+  if (modelId.startsWith('claude')) return LLMProvider.ANTHROPIC;
+  return LLMProvider.GEMINI;
+};
+
+/** Render <optgroup> sections for a model <select> */
+const ModelOptions = ({ groups }: { groups: ModelGroup[] }) => (
+  <>
+    {groups.map(group => (
+      <optgroup key={group.provider} label={group.label}>
+        {group.models.map(m => (
+          <option key={m.id} value={m.id}>{m.name}</option>
+        ))}
+      </optgroup>
+    ))}
+  </>
+);
+
+// ---------------------------------------------------------------------------
+// Golden Prompt export helpers
+// ---------------------------------------------------------------------------
+
+type ExportFormat = 'json' | 'python' | 'markdown';
+
+const buildExportContent = (
+  format: ExportFormat,
+  prompt: string,
+  score: number,
+  model: string,
+  settings: ModelSettings,
+  taskDescription: string,
+  iterations: number,
+  juryMembers: JuryMember[],
+): string => {
+  switch (format) {
+    case 'json':
+      return JSON.stringify({
+        prompt,
+        model,
+        settings,
+        taskDescription,
+        optimization: {
+          finalScore: score,
+          totalIterations: iterations,
+          juryPanel: juryMembers.map(j => ({ name: j.name, model: j.model })),
+          exportedAt: new Date().toISOString(),
+        },
+      }, null, 2);
+
+    case 'python':
+      return `"""
+Golden Prompt — exported from PromptProp
+Score: ${score.toFixed(1)}% | Iterations: ${iterations} | Model: ${model}
+"""
+
+import litellm
+
+PROMPT = """${prompt.replace(/"""/g, '\\"\\"\\"')}"""
+
+response = litellm.completion(
+    model="${model.includes('/') ? model : `gemini/${model}`}",
+    messages=[
+        {"role": "user", "content": f"Task: ${taskDescription}\\n\\nInstruction: {PROMPT}\\n\\nInput: {user_input}"}
+    ],
+    temperature=${settings.temperature ?? 0.7},${settings.topP ? `\n    top_p=${settings.topP},` : ''}
+)
+
+print(response.choices[0].message.content)
+`;
+
+    case 'markdown':
+      return `# Golden Prompt
+
+## Metadata
+| Field | Value |
+|---|---|
+| Final Score | ${score.toFixed(1)}% |
+| Iterations | ${iterations} |
+| Model | ${model} |
+| Temperature | ${settings.temperature ?? 0.7} |
+| Jury Panel | ${juryMembers.map(j => j.name).join(', ')} |
+| Exported | ${new Date().toLocaleString()} |
+
+## Task Description
+${taskDescription}
+
+## Optimized Prompt
+\`\`\`
+${prompt}
+\`\`\`
+`;
+  }
+};
+
+const downloadExport = (content: string, format: ExportFormat) => {
+  const ext = { json: 'json', python: 'py', markdown: 'md' }[format];
+  const mime = { json: 'application/json', python: 'text/x-python', markdown: 'text/markdown' }[format];
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `golden-prompt.${ext}`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
 
 // Helper to calculate simple line-based diff
 const getLineDiff = (oldText: string, newText: string) => {
@@ -46,11 +183,29 @@ const App: React.FC = () => {
       }
     ],
     keys: { gemini: '', openai: '', anthropic: '' },
+    managerModel: {
+      model: 'gemini-3-pro-preview',
+      settings: { temperature: 0.2 }
+    },
     refinementHistory: [],
     isOptimizing: false,
     currentIteration: 0,
-    optimizationStatus: { stage: 'idle', completedItems: 0, totalItems: 0, currentMessage: '' }
+    optimizationStatus: { stage: 'idle', completedItems: 0, totalItems: 0, currentMessage: '' },
+    tokenUsage: { inference: 0, jury: 0, refinement: 0, total: 0 }
   });
+
+  const [modelGroups, setModelGroups] = useState<ModelGroup[]>(FALLBACK_MODELS);
+
+  useEffect(() => {
+    fetch('/api/models')
+      .then(res => res.ok ? res.json() : Promise.reject())
+      .then(data => {
+        if (data.providers && data.providers.length > 0) {
+          setModelGroups(data.providers);
+        }
+      })
+      .catch(() => { /* keep fallback */ });
+  }, []);
 
   const [showAddJury, setShowAddJury] = useState(false);
   const [newJury, setNewJury] = useState<Partial<JuryMember>>({
@@ -59,147 +214,193 @@ const App: React.FC = () => {
     settings: { temperature: 0 }
   });
 
+  // Refs to accumulate streaming results within the current iteration
+  const iterationResultsRef = useRef<TestCaseResult[]>([]);
+  const currentPromptRef = useRef<string>(state.basePrompt);
+  const abortRef = useRef<AbortController | null>(null);
+
   const startOptimization = async () => {
     if (state.dataset.length === 0) return alert("Please add at least one test case to the dataset.");
     if (state.juryMembers.length === 0) return alert("Please add at least one jury member.");
 
-    setState(prev => ({ 
-      ...prev, 
-      isOptimizing: true, 
+    setState(prev => ({
+      ...prev,
+      isOptimizing: true,
       refinementHistory: [],
-      optimizationStatus: { 
-        stage: 'inference', 
-        completedItems: 0, 
-        totalItems: state.dataset.length, 
-        currentMessage: 'Calibrating AI Jury Ensemble...' 
+      tokenUsage: { inference: 0, jury: 0, refinement: 0, total: 0 },
+      optimizationStatus: {
+        stage: 'inference',
+        completedItems: 0,
+        totalItems: state.dataset.length,
+        currentMessage: 'Calibrating AI Jury Ensemble...'
       }
     }));
-    
-    let currentPrompt = state.basePrompt;
-    let iteration = 1;
-    let prevScore = -1;
-    const MAX_ITERATIONS = 5;
+
+    currentPromptRef.current = state.basePrompt;
+    iterationResultsRef.current = [];
+    const abort = new AbortController();
+    abortRef.current = abort;
 
     try {
-      while (iteration <= MAX_ITERATIONS) {
-        setState(prev => ({ 
-          ...prev, 
-          currentIteration: iteration,
-          optimizationStatus: { 
-            stage: 'inference', 
-            completedItems: 0, 
-            totalItems: state.dataset.length, 
-            currentMessage: `Cycle ${iteration}: Executing Inference...` 
-          } 
-        }));
+      await startOptimizeStream(
+        {
+          taskDescription: state.taskDescription,
+          basePrompt: state.basePrompt,
+          dataset: state.dataset.map(r => ({
+            query: r.query,
+            expectedOutput: r.expectedOutput,
+            softNegatives: r.softNegatives || null,
+            hardNegatives: r.hardNegatives || null,
+          })),
+          juryMembers: state.juryMembers.map(j => ({
+            name: j.name,
+            provider: j.provider,
+            model: j.model,
+            settings: j.settings,
+          })),
+          runnerModel: {
+            provider: state.runnerModel.provider,
+            model: state.runnerModel.model,
+            settings: state.runnerModel.settings,
+          },
+          managerModel: {
+            model: state.managerModel.model,
+            settings: state.managerModel.settings,
+          },
+        },
+        (evt: OptimizeSSEEvent) => {
+          const { event, data } = evt;
 
-        const testResults: TestCaseResult[] = [];
-        
-        for (let i = 0; i < state.dataset.length; i++) {
-          const row = state.dataset[i];
-          
-          const actualOutput = await gemini.runInference(
-            state.runnerModel.model,
-            state.taskDescription,
-            currentPrompt,
-            row.query,
-            state.runnerModel.settings
-          );
+          switch (event) {
+            case 'start':
+              break;
 
-          setState(prev => ({ 
-            ...prev, 
-            optimizationStatus: { 
-              ...prev.optimizationStatus, 
-              stage: 'jury', 
-              currentMessage: `Cycle ${iteration}: Validating Case ${i+1}/${state.dataset.length}...` 
-            } 
-          }));
+            case 'iteration_start':
+              iterationResultsRef.current = [];
+              currentPromptRef.current = data.promptText;
+              setState(prev => ({
+                ...prev,
+                currentIteration: data.iteration,
+                optimizationStatus: {
+                  stage: 'inference',
+                  completedItems: 0,
+                  totalItems: state.dataset.length,
+                  currentMessage: `Cycle ${data.iteration}: Executing Inference...`
+                }
+              }));
+              break;
 
-          const juryEvals = await Promise.all(
-            state.juryMembers.map(jury => 
-              gemini.evaluateWithJury(jury, state.taskDescription, row, actualOutput)
-                .then(res => ({ juryName: jury.name, score: res.score, reasoning: res.reasoning }))
-            )
-          );
+            case 'inference_result':
+              setState(prev => ({
+                ...prev,
+                optimizationStatus: {
+                  ...prev.optimizationStatus,
+                  stage: 'inference',
+                  currentMessage: `Cycle ${data.iteration}: Inference ${data.rowIndex + 1}/${state.dataset.length}...`
+                }
+              }));
+              break;
 
-          const avg = juryEvals.reduce((s, e) => s + e.score, 0) / juryEvals.length;
-          const feedback = juryEvals.map(e => `[${e.juryName}]: ${e.reasoning}`).join("\n");
+            case 'jury_result': {
+              const result: TestCaseResult = {
+                rowId: data.rowId,
+                actualOutput: '', // filled from iteration_complete
+                scores: data.scores,
+                averageScore: data.averageScore,
+                combinedFeedback: data.scores.map((s: any) => `[${s.juryName}]: ${s.reasoning}`).join("\n"),
+              };
+              iterationResultsRef.current.push(result);
+              setState(prev => ({
+                ...prev,
+                optimizationStatus: {
+                  ...prev.optimizationStatus,
+                  stage: 'jury',
+                  completedItems: data.rowIndex + 1,
+                  currentMessage: `Cycle ${data.iteration}: Validating Case ${data.rowIndex + 1}/${state.dataset.length}...`
+                }
+              }));
+              break;
+            }
 
-          testResults.push({
-            rowId: row.id,
-            actualOutput,
-            scores: juryEvals,
-            averageScore: avg,
-            combinedFeedback: feedback
-          });
+            case 'iteration_complete': {
+              // Use full results from backend (includes actualOutput)
+              const fullResults: TestCaseResult[] = data.results || iterationResultsRef.current;
 
-          setState(prev => ({ 
-            ...prev, 
-            optimizationStatus: { 
-              ...prev.optimizationStatus, 
-              completedItems: i + 1, 
-              stage: 'inference' 
-            } 
-          }));
-        }
+              const step: IterationStep = {
+                iteration: data.iteration,
+                prompt: currentPromptRef.current,
+                averageScore: data.averageScore,
+                results: fullResults,
+                refinementFeedback: data.iteration === 1
+                  ? "Baseline established."
+                  : "Analyzing propagation impact...",
+              };
 
-        const iterationAvg = testResults.reduce((s, r) => s + r.averageScore, 0) / testResults.length;
-        
-        const step: IterationStep = {
-          iteration,
-          prompt: currentPrompt,
-          averageScore: iterationAvg,
-          results: testResults,
-          refinementFeedback: iteration === 1 ? "Baseline established." : "Analyzing propagation impact..."
-        };
+              setState(prev => ({
+                ...prev,
+                refinementHistory: [...prev.refinementHistory, step],
+                tokenUsage: data.cumulativeTokens || prev.tokenUsage,
+                optimizationStatus: {
+                  ...prev.optimizationStatus,
+                  stage: data.converged ? 'complete' : prev.optimizationStatus.stage,
+                  currentMessage: data.converged ? 'Optimization convergence achieved.' : prev.optimizationStatus.currentMessage,
+                }
+              }));
+              break;
+            }
 
-        // If we have a previous step, we can calculate a diff if we store it
-        const previousStep = state.refinementHistory[state.refinementHistory.length - 1];
+            case 'refinement':
+              setState(prev => {
+                const history = [...prev.refinementHistory];
+                const lastStep = history[history.length - 1];
+                if (lastStep) {
+                  lastStep.refinementFeedback = `${data.explanation}\n\nImpact Analysis: ${data.deltaReasoning}`;
+                }
+                return {
+                  ...prev,
+                  refinementHistory: history,
+                  tokenUsage: data.cumulativeTokens || prev.tokenUsage,
+                  optimizationStatus: {
+                    stage: 'refinement',
+                    completedItems: 0,
+                    totalItems: 1,
+                    currentMessage: `Cycle ${data.iteration}: Propagating back-prop updates...`
+                  }
+                };
+              });
+              currentPromptRef.current = data.refinedPrompt;
+              break;
 
-        setState(prev => ({ ...prev, refinementHistory: [...prev.refinementHistory, step] }));
+            case 'complete':
+              setState(prev => ({
+                ...prev,
+                tokenUsage: data.totalTokens || prev.tokenUsage,
+                optimizationStatus: {
+                  stage: 'complete',
+                  completedItems: state.dataset.length,
+                  totalItems: state.dataset.length,
+                  currentMessage: `Optimization complete. Final score: ${data.finalScore}%`
+                }
+              }));
+              break;
 
-        if (iterationAvg >= 98 || (prevScore !== -1 && Math.abs(iterationAvg - prevScore) < 0.2)) {
-          setState(prev => ({ 
-            ...prev, 
-            optimizationStatus: { ...prev.optimizationStatus, stage: 'complete', currentMessage: 'Optimization convergence achieved.' } 
-          }));
-          break;
-        }
-
-        setState(prev => ({ 
-          ...prev, 
-          optimizationStatus: { 
-            stage: 'refinement', 
-            completedItems: 0, 
-            totalItems: 1, 
-            currentMessage: `Cycle ${iteration}: Propagating back-prop updates...` 
-          } 
-        }));
-
-        const failures = testResults
-          .filter(r => r.averageScore < 90)
-          .map(r => {
-            const row = state.dataset.find(d => d.id === r.rowId);
-            return `Query: ${row?.query}\nExpected: ${row?.expectedOutput}\nActual: ${r.actualOutput}\nCritique: ${r.combinedFeedback}`;
-          })
-          .join("\n---\n");
-
-        const refinement = await gemini.refinePrompt(state.taskDescription, currentPrompt, failures);
-        
-        currentPrompt = refinement.refinedPrompt;
-        step.refinementFeedback = `${refinement.explanation}\n\nImpact Analysis: ${refinement.deltaReasoning}`;
-
-        prevScore = iterationAvg;
-        iteration++;
-        await new Promise(r => setTimeout(r, 1000));
-      }
+            case 'error':
+              console.error('Optimization error:', data);
+              alert(`Optimization error at ${data.stage}: ${data.message}`);
+              break;
+          }
+        },
+        abort.signal,
+      );
     } catch (err: any) {
-      console.error(err);
-      alert("Propagator encountered an error. Ensure API keys are correct and network is stable.");
+      if (err.name !== 'AbortError') {
+        console.error(err);
+        alert("Propagator encountered an error. Ensure API keys are correct and network is stable.");
+      }
     }
 
-    setState(prev => ({ 
-      ...prev, 
+    setState(prev => ({
+      ...prev,
       isOptimizing: false,
       optimizationStatus: { ...prev.optimizationStatus, stage: 'idle', currentMessage: '' }
     }));
@@ -207,11 +408,12 @@ const App: React.FC = () => {
 
   const addJuryMember = () => {
     if (!newJury.name) return alert("Enter a label for this judge.");
+    const juryModelId = newJury.model || 'gemini-3-pro-preview';
     const member: JuryMember = {
       id: Math.random().toString(36).substr(2, 9),
       name: newJury.name,
-      provider: LLMProvider.GEMINI,
-      model: newJury.model || 'gemini-3-pro-preview',
+      provider: getProviderForModel(juryModelId, modelGroups),
+      model: juryModelId,
       settings: (newJury.settings || { temperature: 0 }) as ModelSettings
     };
     setState(prev => ({ ...prev, juryMembers: [...prev.juryMembers, member] }));
@@ -253,9 +455,9 @@ const App: React.FC = () => {
             <select 
               className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-indigo-500/40 appearance-none cursor-pointer"
               value={state.runnerModel.model}
-              onChange={(e) => setState(p => ({ ...p, runnerModel: { ...p.runnerModel, model: e.target.value } }))}
+              onChange={(e) => setState(p => ({ ...p, runnerModel: { ...p.runnerModel, model: e.target.value, provider: getProviderForModel(e.target.value, modelGroups) } }))}
             >
-              {GEMINI_MODELS.map(m => <option key={m.id} value={m.id} className="bg-gray-950">{m.name}</option>)}
+              <ModelOptions groups={modelGroups} />
             </select>
             <div className="grid grid-cols-2 gap-2">
               <div className="bg-white/[0.02] border border-white/5 rounded-xl p-2 px-3">
@@ -313,7 +515,7 @@ const App: React.FC = () => {
                 value={newJury.model}
                 onChange={(e) => setNewJury(p => ({ ...p, model: e.target.value }))}
               >
-                {GEMINI_MODELS.map(m => <option key={m.id} value={m.id} className="bg-gray-900">{m.name}</option>)}
+                <ModelOptions groups={modelGroups} />
               </select>
               <button 
                 onClick={addJuryMember}
@@ -344,12 +546,40 @@ const App: React.FC = () => {
           </div>
         </section>
 
+        <section className="space-y-3">
+          <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Refinement Manager</label>
+          <div className="space-y-2">
+            <select
+              className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-indigo-500/40 appearance-none cursor-pointer"
+              value={state.managerModel.model}
+              onChange={(e) => setState(p => ({ ...p, managerModel: { ...p.managerModel, model: e.target.value } }))}
+            >
+              <ModelOptions groups={modelGroups} />
+            </select>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="bg-white/[0.02] border border-white/5 rounded-xl p-2 px-3">
+                <span className="text-[9px] text-gray-600 uppercase font-bold block mb-1">Temp</span>
+                <input
+                  type="number" step="0.1" min="0" max="2"
+                  className="w-full bg-transparent text-xs outline-none text-indigo-300"
+                  value={state.managerModel.settings.temperature}
+                  onChange={(e) => setState(p => ({ ...p, managerModel: { ...p.managerModel, settings: { ...p.managerModel.settings, temperature: parseFloat(e.target.value) } } }))}
+                />
+              </div>
+              <div className="bg-white/[0.02] border border-white/5 rounded-xl p-2 px-3">
+                <span className="text-[9px] text-gray-600 uppercase font-bold block mb-1">Role</span>
+                <span className="text-xs text-gray-500">Rewriter</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <button
           onClick={startOptimization}
           disabled={state.isOptimizing}
           className={`mt-auto w-full py-4 rounded-2xl font-black text-sm uppercase tracking-[0.2em] transition-all shadow-2xl flex items-center justify-center gap-3
-            ${state.isOptimizing 
-              ? 'bg-gray-900 text-gray-700 cursor-not-allowed border border-white/5' 
+            ${state.isOptimizing
+              ? 'bg-gray-900 text-gray-700 cursor-not-allowed border border-white/5'
               : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-950/40 active:scale-[0.97]'}`}
         >
           {state.isOptimizing ? 'Back-Propagating...' : 'Propagate Lift'}
@@ -379,21 +609,105 @@ const App: React.FC = () => {
                 </div>
               </div>
               <div className="h-3 w-full bg-gray-900 rounded-full overflow-hidden border border-white/5 shadow-inner">
-                <div 
-                  className="h-full bg-gradient-to-r from-indigo-600 via-blue-500 to-cyan-400 transition-all duration-1000 ease-out shadow-[0_0_20px_rgba(99,102,241,0.3)]" 
+                <div
+                  className="h-full bg-gradient-to-r from-indigo-600 via-blue-500 to-cyan-400 transition-all duration-1000 ease-out shadow-[0_0_20px_rgba(99,102,241,0.3)]"
                   style={{ width: `${(state.optimizationStatus.completedItems / (state.optimizationStatus.totalItems || 1)) * 100}%` }}
                 ></div>
               </div>
+
+              {/* Token Usage Monitor */}
+              {state.tokenUsage.total > 0 && (
+                <div className="mt-6 grid grid-cols-4 gap-3">
+                  {([
+                    { label: 'Inference', value: state.tokenUsage.inference, color: 'text-blue-400' },
+                    { label: 'Jury', value: state.tokenUsage.jury, color: 'text-purple-400' },
+                    { label: 'Refinement', value: state.tokenUsage.refinement, color: 'text-cyan-400' },
+                    { label: 'Total', value: state.tokenUsage.total, color: 'text-indigo-300' },
+                  ] as const).map(t => (
+                    <div key={t.label} className="bg-white/[0.02] border border-white/5 rounded-xl p-3 text-center">
+                      <span className="block text-[9px] font-bold text-gray-600 uppercase tracking-widest">{t.label}</span>
+                      <span className={`block text-sm font-black tabular-nums mt-1 ${t.color}`}>
+                        {t.value >= 1_000_000 ? `${(t.value / 1_000_000).toFixed(1)}M` : t.value >= 1_000 ? `${(t.value / 1_000).toFixed(1)}K` : t.value}
+                      </span>
+                      <span className="block text-[8px] text-gray-700 mt-0.5">tokens</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
           {state.refinementHistory.length > 0 && (
             <div className="space-y-16 animate-in fade-in slide-in-from-bottom-8 duration-1000">
-              
+
               <div className="bg-[#0a0c12]/50 p-8 rounded-[40px] border border-white/5">
                  <IterationChart history={state.refinementHistory} />
               </div>
-              
+
+              {/* Token Usage Summary (post-optimization) */}
+              {!state.isOptimizing && state.tokenUsage.total > 0 && (
+                <div className="bg-white/[0.02] border border-white/5 rounded-[32px] p-6">
+                  <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-4">Token Consumption</h3>
+                  <div className="grid grid-cols-4 gap-3">
+                    {([
+                      { label: 'Inference', value: state.tokenUsage.inference, color: 'text-blue-400', pct: Math.round((state.tokenUsage.inference / state.tokenUsage.total) * 100) },
+                      { label: 'Jury', value: state.tokenUsage.jury, color: 'text-purple-400', pct: Math.round((state.tokenUsage.jury / state.tokenUsage.total) * 100) },
+                      { label: 'Refinement', value: state.tokenUsage.refinement, color: 'text-cyan-400', pct: Math.round((state.tokenUsage.refinement / state.tokenUsage.total) * 100) },
+                      { label: 'Total', value: state.tokenUsage.total, color: 'text-white', pct: 100 },
+                    ] as const).map(t => (
+                      <div key={t.label} className="bg-white/[0.02] border border-white/5 rounded-xl p-4 text-center">
+                        <span className="block text-[9px] font-bold text-gray-600 uppercase tracking-widest">{t.label}</span>
+                        <span className={`block text-lg font-black tabular-nums mt-1 ${t.color}`}>
+                          {t.value >= 1_000_000 ? `${(t.value / 1_000_000).toFixed(1)}M` : t.value >= 1_000 ? `${(t.value / 1_000).toFixed(1)}K` : t.value}
+                        </span>
+                        <span className="block text-[9px] text-gray-600 mt-0.5">{t.label !== 'Total' ? `${t.pct}%` : 'tokens'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Golden Prompt Export */}
+              {!state.isOptimizing && (() => {
+                const best = [...state.refinementHistory].sort((a, b) => b.averageScore - a.averageScore)[0];
+                return (
+                  <div className="bg-gradient-to-br from-amber-500/[0.04] to-yellow-500/[0.02] border border-amber-500/20 rounded-[32px] p-8 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
+                    <div className="flex items-center gap-5">
+                      <div className="w-12 h-12 bg-amber-500/10 rounded-2xl flex items-center justify-center flex-shrink-0">
+                        <svg className="w-6 h-6 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                        </svg>
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-black text-amber-300 uppercase tracking-widest">Golden Prompt Ready</h3>
+                        <p className="text-xs text-amber-100/50 mt-1">
+                          Best: Cycle {best.iteration} at {best.averageScore.toFixed(1)}% — {state.refinementHistory.length} iteration{state.refinementHistory.length > 1 ? 's' : ''} completed
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 flex-shrink-0">
+                      {(['json', 'python', 'markdown'] as ExportFormat[]).map(fmt => (
+                        <button
+                          key={fmt}
+                          onClick={() => {
+                            const content = buildExportContent(
+                              fmt, best.prompt, best.averageScore,
+                              state.runnerModel.model, state.runnerModel.settings,
+                              state.taskDescription, state.refinementHistory.length,
+                              state.juryMembers,
+                            );
+                            downloadExport(content, fmt);
+                          }}
+                          className="px-4 py-2 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 rounded-xl text-xs font-bold text-amber-300 uppercase tracking-wider transition-all"
+                        >
+                          {fmt === 'python' ? '.py' : fmt === 'markdown' ? '.md' : '.json'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div className="space-y-12">
                 <h2 className="text-sm font-black text-gray-500 uppercase tracking-[0.3em] pl-4 border-l-4 border-indigo-500">Iteration Intelligence</h2>
                 {[...state.refinementHistory].reverse().map((step, idx) => {
