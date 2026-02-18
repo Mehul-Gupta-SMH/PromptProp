@@ -53,3 +53,47 @@ All changes below are from previous session work that was not committed.
 - 146 tests passing (82 unit, 44 integration, 20 regression)
 - 91% overall coverage
 - Key files: route.py 98%, optimize.py 88%, llm_client.py 100%, generateMetrics.py 100%, db/models.py 100%
+
+---
+
+## Session: 2026-02-18 (Experiments + Deep Health-Check)
+
+### Changes
+
+| # | Commit Group | Files | Status |
+|---|-------------|-------|--------|
+| 1 | feat: Add experiment runner script and deep health-check endpoint | `ppBackend/run_experiments.py` (new), `ppBackend/route.py` | done |
+
+### Commit Log
+
+| Hash | Message |
+|------|---------|
+| `1437443` | feat: Add experiment runner script and deep health-check endpoint |
+
+### Experiment Results
+
+Ran 3 text classification experiments through `/api/optimize` SSE endpoint using `gpt-4o-mini`:
+
+| Experiment | Rows | Iterations | Final Score | Experiment ID |
+|---|---|---|---|---|
+| Easy — Binary Sentiment | 3 | 1 | 100.0 | `ab98cebb-0344-4e22-9c21-67bc90dcb445` |
+| Medium — 4-Category Feedback | 5 | 1 | 100.0 | `e8e8ddf1-11a7-4c59-b615-7ed153d5754b` |
+| Hard — 6-Category Intent Detection | 6 | 2 | 98.3 | `77e4687e-5e1c-4a50-8a43-571785761f5c` |
+
+- All experiments persisted to SQLite and MLflow
+- DB verification via `GET /api/dataset/{id}` confirmed correct row counts
+
+### Deep Health-Check
+
+Enhanced `GET /health-check?deep=true` validates API keys against provider endpoints:
+- **OpenAI**: `/v1/models` + optional billing fetch
+- **Gemini**: `/v1/models` with API key
+- **Anthropic**: `/v1/messages/count_tokens` (cheapest call, no model invocation)
+
+Status levels: `ok` / `warning` (valid key, no credits) / `error` / `missing`
+Overall: `healthy` / `healthy (with warnings)` / `degraded`
+
+### Notes
+- Easy and Medium experiments scored 100% on first iteration — base prompts were sufficient
+- Hard experiment needed 2 iterations; some rows scored 90 in iteration 1, converged at 98.3 (above 98% perfectScore threshold)
+- Anthropic key detected as valid but out of credits (warning, not error)
