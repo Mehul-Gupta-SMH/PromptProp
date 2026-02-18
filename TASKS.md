@@ -2,7 +2,7 @@
 
 ## Core Backend
 
-### [ ] Integrate role prompts into API endpoints
+### [x] Integrate role prompts into API endpoints
 **Labels:** `backend` `enhancement`
 
 The `ppBackend/prompts/` directory contains well-authored role definitions (`manager.prompt`, `jury.prompt`, `rewriter.prompt`) but they are not used by the API endpoints. The current `/api/jury` and `/api/refine` endpoints have prompt logic hardcoded inline.
@@ -18,7 +18,7 @@ The `ppBackend/prompts/` directory contains well-authored role definitions (`man
 
 ---
 
-### [ ] Add SQLAlchemy database layer for experiment persistence
+### [x] Add SQLAlchemy database layer for experiment persistence
 **Labels:** `backend` `enhancement`
 
 Currently all state lives in the frontend React state and is lost on page refresh. The backend needs a persistence layer.
@@ -34,7 +34,7 @@ Currently all state lives in the frontend React state and is lost on page refres
 
 ---
 
-### [ ] Wire MLflow experiment tracking into optimization loop
+### [x] Wire MLflow experiment tracking into optimization loop
 **Labels:** `backend` `enhancement`
 
 `ppBackend/resources/registerMetrics.py` has a working `register()` function that logs metrics to MLflow, but nothing calls it.
@@ -51,7 +51,7 @@ Currently all state lives in the frontend React state and is lost on page refres
 
 ---
 
-### [ ] Implement generateMetrics.py — traditional + custom metrics
+### [x] Implement generateMetrics.py — traditional + custom metrics
 **Labels:** `backend` `enhancement`
 
 `ppBackend/resources/generateMetrics.py` has a single stub function `traditionalMetrics()`. The manager prompt specifies both traditional and non-traditional metrics.
@@ -69,7 +69,7 @@ Currently all state lives in the frontend React state and is lost on page refres
 
 ---
 
-### [ ] Implement train/validation/test data split endpoints
+### [x] Implement train/validation/test data split endpoints
 **Labels:** `backend` `enhancement`
 
 The backend has stub endpoints for `POST /train_data`, `POST /validation_data`, `POST /test_data` that return 501.
@@ -85,7 +85,7 @@ The backend has stub endpoints for `POST /train_data`, `POST /validation_data`, 
 
 ---
 
-### [ ] Move optimization loop to backend
+### [x] Move optimization loop to backend
 **Labels:** `backend` `enhancement`
 
 The optimization loop currently runs in the frontend `App.tsx`. For robustness, multi-provider support, and proper data management, it should move to the backend.
@@ -143,7 +143,7 @@ After optimization, successful test cases could be automatically extracted and i
 
 ---
 
-### [ ] Add token usage monitor
+### [x] Add token usage monitor
 **Labels:** `frontend` `backend` `enhancement`
 
 The backend `GenerateResponse` already returns `TokenUsage` (prompt_tokens, completion_tokens, total_tokens) but the frontend doesn't display it.
@@ -156,7 +156,7 @@ The backend `GenerateResponse` already returns `TokenUsage` (prompt_tokens, comp
 
 ---
 
-### [ ] Add Golden Prompt export (JSON, Python, Markdown)
+### [x] Add Golden Prompt export (JSON, Python, Markdown)
 **Labels:** `frontend` `enhancement`
 
 **Requirements:**
@@ -193,7 +193,7 @@ The backend `GenerateResponse` already returns `TokenUsage` (prompt_tokens, comp
 
 ---
 
-### [ ] Add multi-provider model selector in UI
+### [x] Add multi-provider model selector in UI
 **Labels:** `frontend` `enhancement`
 
 The `LLMProvider` enum now includes Gemini, OpenAI, and Anthropic but the UI only shows Gemini models in the dropdown.
